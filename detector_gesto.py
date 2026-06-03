@@ -9,7 +9,10 @@ import time
 # ─────────────────────────────────────────────
 # Configuración y Constantes
 # ─────────────────────────────────────────────
-ARCHIVO_VIDEO = "Scubaa.mp4"  
+ARCHIVO_VIDEO = "Scubaa.mp4"
+IMG_ARRIBA    = "arriba.jpg"
+IMG_BOCA      = "boca.jpg"
+IMG_CABEZA    = "cabeza.jpg"
 
 VERDE    = (0, 220, 60)
 ROJO     = (0, 50, 220)
@@ -24,28 +27,17 @@ CONEXIONES = [
 ]
 
 # ─────────────────────────────────────────────
-# Lógica de detección de gestos
+# Funciones de ayuda
 # ─────────────────────────────────────────────
-class DetectorGesto:
-    def __init__(self, umbral_nariz: float = 0.15):
-        self.umbral_nariz = umbral_nariz
+def cargar_imagen_o_fallback(ruta: str, titulo: str):
+    img = cv2.imread(ruta)
+    if img is None:
+        img = np.zeros((400, 600, 3), dtype=np.uint8)
+        cv2.putText(img, f"Falta imagen:", (50, 160), cv2.FONT_HERSHEY_SIMPLEX, 1, ROJO, 2)
+        cv2.putText(img, ruta, (50, 210), cv2.FONT_HERSHEY_SIMPLEX, 1.2, AMARILLO, 2)
+        cv2.putText(img, titulo, (50, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.8, VERDE, 2)
+    return img
 
-    def actualizar(self, resultado) -> bool:
-        # Condición 1: Deben detectarse al menos 2 manos
-        if resultado is None or not resultado.hand_landmarks or len(resultado.hand_landmarks) < 2:
-            return False
-
-        centro_imagen = np.array([0.5, 0.4])  
-        
-        for hand_lm in resultado.hand_landmarks[:2]:
-            indice = np.array([hand_lm[8].x, hand_lm[8].y]) 
-            if float(np.linalg.norm(indice - centro_imagen)) < self.umbral_nariz:
-                return True 
-        return False
-
-# ─────────────────────────────────────────────
-# Dibujar landmarks manualmente
-# ─────────────────────────────────────────────
 def dibujar_mano(frame, hand_lm, w: int, h: int):
     puntos = [(int(lm.x * w), int(lm.y * h)) for lm in hand_lm]
     for a, b in CONEXIONES:
@@ -54,112 +46,150 @@ def dibujar_mano(frame, hand_lm, w: int, h: int):
         cv2.circle(frame, p, 4, VERDE, -1)
 
 # ─────────────────────────────────────────────
+# Lógica de detección de gestos
+# ─────────────────────────────────────────────
+class DetectorGesto:
+    def __init__(self):
+        self.zona_nariz = np.array([0.5, 0.4])
+        self.zona_boca = np.array([0.5, 0.65])
+        self.umbral_zona = 0.15
+        self.limite_y_cabeza = 0.35
+
+    def actualizar(self, resultado) -> str:
+        if resultado is None or not resultado.hand_landmarks:
+            return "NINGUNO"
+
+        manos = resultado.hand_landmarks
+
+        # Evaluar gestos que requieren 2 MANOS
+        if len(manos) >= 2:
+            mano1_arriba = manos[0][0].y < self.limite_y_cabeza or manos[0][8].y < self.limite_y_cabeza
+            mano2_arriba = manos[1][0].y < self.limite_y_cabeza or manos[1][8].y < self.limite_y_cabeza
+            
+            # Prioridad 1: Manos en la cabeza
+            if mano1_arriba and mano2_arriba:
+                return "CABEZA"
+
+            # Prioridad 2: Mano en la nariz (y la otra presente)
+            for hand_lm in manos[:2]:
+                indice = np.array([hand_lm[8].x, hand_lm[8].y])
+                if float(np.linalg.norm(indice - self.zona_nariz)) < self.umbral_zona:
+                    return "NARIZ"
+
+        # Evaluar gestos de 1 MANO (buscamos en todas las detectadas)
+        for hand_lm in manos:
+            indice = np.array([hand_lm[8].x, hand_lm[8].y])
+            
+            # Prioridad 3: Mano en la boca
+            if float(np.linalg.norm(indice - self.zona_boca)) < self.umbral_zona:
+                return "BOCA"
+
+            # Prioridad 4: Dedo arriba
+            indice_estirado = hand_lm[8].y < hand_lm[6].y
+            medio_doblado   = hand_lm[12].y > hand_lm[10].y
+            anular_doblado  = hand_lm[16].y > hand_lm[14].y
+            menique_doblado = hand_lm[20].y > hand_lm[18].y
+
+            if indice_estirado and medio_doblado and anular_doblado and menique_doblado:
+                return "ARRIBA"
+
+        return "NINGUNO"
+
+# ─────────────────────────────────────────────
 # Bucle principal
 # ─────────────────────────────────────────────
 def main(args: argparse.Namespace):
-    # Configurar HandLandmarker
-    base_options = mp_python.BaseOptions(
-        model_asset_path="hand_landmarker.task",
-        delegate=mp_python.BaseOptions.Delegate.CPU,
-    )
-    options = mp_vision.HandLandmarkerOptions(
-        base_options=base_options,
-        running_mode=mp_vision.RunningMode.VIDEO,
-        num_hands=2,
-        min_hand_detection_confidence=0.5,
-        min_hand_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
-
-    print("Cargando modelo MediaPipe...")
-    landmarker = mp_vision.HandLandmarker.create_from_options(options)
-    print("Modelo cargado OK.")
-
-    detector = DetectorGesto(umbral_nariz=args.umbral_nariz)
-    
-    # Preparar cámara y video
-    cam = cv2.VideoCapture(args.cam)
-    if not cam.isOpened():
-        print(f"[ERROR] No se pudo abrir la cámara {args.cam}")
-        return
+    # Cargar recursos
+    imagenes = {
+        "ARRIBA": cargar_imagen_o_fallback(IMG_ARRIBA, "Gesto: Dedo Arriba"),
+        "BOCA":   cargar_imagen_o_fallback(IMG_BOCA, "Gesto: Mano en Boca"),
+        "CABEZA": cargar_imagen_o_fallback(IMG_CABEZA, "Gesto: Manos en Cabeza"),
+    }
 
     cap_video = cv2.VideoCapture(ARCHIVO_VIDEO)
     if not cap_video.isOpened():
-        print(f"[ERROR] No se pudo abrir el video: {ARCHIVO_VIDEO}. Revisa que esté en la misma carpeta.")
-        return
+        print(f"[WARN] No se pudo abrir {ARCHIVO_VIDEO}. El gesto de nariz no mostrara video.")
 
-    nombre_ventana_video = "Video Gesto Activo"
-    ventana_video_creada = False
+    # Configurar MediaPipe
+    base_options = mp_python.BaseOptions(model_asset_path="hand_landmarker.task", delegate=mp_python.BaseOptions.Delegate.CPU)
+    options = mp_vision.HandLandmarkerOptions(
+        base_options=base_options, running_mode=mp_vision.RunningMode.VIDEO, num_hands=2,
+        min_hand_detection_confidence=0.5, min_hand_presence_confidence=0.5, min_tracking_confidence=0.5
+    )
+    landmarker = mp_vision.HandLandmarker.create_from_options(options)
+    detector = DetectorGesto()
+    
+    cam = cv2.VideoCapture(args.cam)
+    
+    nombre_ventana_popup = "Visor Multimedia"
+    ventana_creada = False
 
     print("Iniciando... Presiona Q en la ventana de la cámara para salir.")
 
     while True:
         ok, frame = cam.read()
-        if not ok:
-            print("[WARN] No se recibió frame de la cámara.")
-            break
+        if not ok: break
 
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
         ts_ms = int(time.time() * 1000)
 
-        # Procesar frame
+        # Procesamiento MediaPipe
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         resultado = landmarker.detect_for_video(mp_image, ts_ms)
 
-        # Dibujar landmarks de las manos
         if resultado.hand_landmarks:
             for hand_lm in resultado.hand_landmarks:
                 dibujar_mano(frame, hand_lm, w, h)
 
-        # Evaluar el gesto (2 manos en pantalla y 1 en la nariz)
-        gesto_activo = detector.actualizar(resultado)
+        # Evaluar estado
+        estado_actual = detector.actualizar(resultado)
 
-        if gesto_activo:
-            if not ventana_video_creada:
-                cv2.namedWindow(nombre_ventana_video, cv2.WINDOW_NORMAL)
-                if args.fullscreen:
-                    cv2.setWindowProperty(nombre_ventana_video, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                ventana_video_creada = True
+        # ---------------------------------------------------------
+        # Lógica de Ventanas Emergentes 
+        # ---------------------------------------------------------
+        if estado_actual in ["CABEZA", "BOCA", "ARRIBA"]:
+            if not ventana_creada:
+                cv2.namedWindow(nombre_ventana_popup, cv2.WINDOW_NORMAL)
+                ventana_creada = True
+            cv2.imshow(nombre_ventana_popup, imagenes[estado_actual])
 
+        elif estado_actual == "NARIZ" and cap_video.isOpened():
+            if not ventana_creada:
+                cv2.namedWindow(nombre_ventana_popup, cv2.WINDOW_NORMAL)
+                ventana_creada = True
+            
             ok_vid, frame_vid = cap_video.read()
-            # Si el video termina, lo reiniciamos (Loop)
-            if not ok_vid:
+            if not ok_vid: # Reiniciar video si se acaba
                 cap_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 ok_vid, frame_vid = cap_video.read()
-
+            
             if ok_vid:
-                cv2.imshow(nombre_ventana_video, frame_vid)
+                cv2.imshow(nombre_ventana_popup, frame_vid)
+
         else:
-            # Si el gesto se rompe, destruimos la ventana inmediatamente
-            if ventana_video_creada:
-                cv2.destroyWindow(nombre_ventana_video)
-                ventana_video_creada = False
+            # Si no hay gesto, cerramos el visor
+            if ventana_creada:
+                cv2.destroyWindow(nombre_ventana_popup)
+                ventana_creada = False
 
-        texto_estado = "GESTO ACTIVO (Reproduciendo)" if gesto_activo else "Esperando gesto..."
-        color_estado = VERDE if gesto_activo else ROJO
-        cv2.putText(frame, texto_estado, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_estado, 2)
+        # HUD en la cámara
+        texto = f"ESTADO: {estado_actual}"
+        color = ROJO if estado_actual == "NINGUNO" else VERDE
+        cv2.putText(frame, texto, (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        cv2.imshow("Detector de gestos Q para salir", frame)
 
-        cv2.imshow("Detector Q para salir", frame)
         if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
             break
 
-    # Limpieza al salir
+    # Limpieza
     cam.release()
     cap_video.release()
     landmarker.close()
     cv2.destroyAllWindows()
 
-# ─────────────────────────────────────────────
-# Punto de entrada
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Detector de gestos -> muestra video dinamicamente")
-    parser.add_argument("--cam",          type=int,   default=0,
-                        help="Índice de la cámara (default 0)")
-    parser.add_argument("--umbral-nariz", type=float, default=0.15,
-                        help="Radio de la zona de la nariz (default 0.15)")
-    parser.add_argument("--fullscreen",   action="store_true",
-                        help="Abre el video en pantalla completa")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cam", type=int, default=0)
     main(parser.parse_args())
