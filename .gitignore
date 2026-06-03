@@ -9,32 +9,25 @@ dist/
 build/
 .eggs/
 
-# Entornos virtuales
-.venv/
-venv/
+# Entornos virtuales y variables de entorno
+.venv-1/
+venv-1/
 env/
 .env
 
-# Videos (el usuario pone los suyos, no se suben al repo)
-videos/*.mp4
-videos/*.avi
-videos/*.mov
-videos/*.mkv
-videos/*.webm
-
-# Jupyter (por si alguien experimenta)
+# Jupyter
 .ipynb_checkpoints/
 *.ipynb
 
-# IDEs
+# IDEs y Editores
 .vscode/
 .idea/
 *.swp
 *.swo
-.venv-1/
 
 # macOS
 .DS_Store
+._*
 
 # Windows
 Thumbs.db
@@ -44,5 +37,5 @@ desktop.ini
 *.log
 *.tmp
 
-# Modelos MediaPipe
+# Modelos de Machine Learning (MediaPipe)
 *.task
